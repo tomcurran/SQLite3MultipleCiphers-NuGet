@@ -1,5 +1,5 @@
 ﻿using Dapper;
-using Microsoft.Data.Sqlite;
+using SQLite;
 
 namespace MauiTestApp;
 
@@ -12,17 +12,20 @@ public partial class MainPage : ContentPage
 
     private void ContentPage_Loaded(object sender, EventArgs e)
     {
-        try
-        {
-            var dataSource = "Test.db";
+        var dataSource = "Test.db";
 
 #if ANDROID
-            dataSource = Path.Combine(FileSystem.Current.AppDataDirectory, dataSource);
+        dataSource = Path.Combine(FileSystem.Current.AppDataDirectory, dataSource);
 #endif
 
-            using var connection = new SqliteConnection($"Data Source={dataSource};Password=Password12!");
-
-            VersionLbl.Text = connection.ExecuteScalar<string>("SELECT sqlite3mc_version()");
+        try
+        {
+            SQLitePCL.Batteries.Init();
+            using var connection = new SQLiteConnection(new SQLiteConnectionString(":memory:"));
+            var sqliteVersion = connection.ExecuteScalar<string>("SELECT sqlite_version();");
+            var cipher = connection.ExecuteScalar<string>("PRAGMA cipher;");
+            var providerName = SQLitePCL.raw.GetNativeLibraryName();
+            VersionLbl.Text = $"sqlite_version={sqliteVersion}, default cipher={cipher ?? "<null>"}, provider={providerName}";
         }
         catch (Exception ex)
         {

@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFrameworks>net9.0-android;net9.0-ios;net9.0-maccatalyst</TargetFrameworks>
@@ -56,12 +56,42 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="AdamE.Firebase.iOS.Analytics" Version="12.10.0" />
+    <PackageReference Include="AdamE.Firebase.iOS.Crashlytics" Version="12.10.0" />
     <PackageReference Include="Dapper" Version="2.1.66" />
-    <PackageReference Include="Microsoft.Data.Sqlite.Core" Version="8.0.13" />
     <PackageReference Include="Microsoft.Maui.Controls" Version="$(MauiVersion)" />
     <PackageReference Include="Microsoft.Maui.Controls.Compatibility" Version="$(MauiVersion)" />
     <PackageReference Include="Microsoft.Extensions.Logging.Debug" Version="8.0.1" />
+    <PackageReference Include="Plugin.Firebase.Analytics" Version="4.0.0" />
+    <PackageReference Include="Plugin.Firebase.Crashlytics" Version="4.0.0" />
+    <PackageReference Include="sqlite-net-base" Version="1.9.172" />
     <PackageReference Include="SQLite3MC.PCLRaw.bundle" Version="$(Sqlite3MCNuGetVersion)" />
   </ItemGroup>
 
+  <ItemGroup Condition="'$(TargetFramework)' == 'net9.0-android'">
+    <PackageReference Include="LocalyticsMaui" Version="1.2.0" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net9.0-ios'">
+    <PackageReference Include="LocalyticsMaui" Version="1.2.0" />
+  </ItemGroup>
+
+  <!-- uncomment for the fix - force sqlite3mc to provide sqlite
+  <ItemGroup Condition="!$([MSBuild]::ValueOrDefault('$(RuntimeIdentifier)','').Contains('simulator'))">
+    <NativeReference Include="$(NuGetPackageRoot)sqlite3mc.pclraw.lib/$(Sqlite3MCNuGetVersion)/runtimes/ios-arm64/native/sqlite3mc.a">
+      <Kind>Static</Kind>
+      <ForceLoad>True</ForceLoad>
+    </NativeReference>
+  </ItemGroup>
+  <ItemGroup Condition="$([MSBuild]::ValueOrDefault('$(RuntimeIdentifier)','').Contains('simulator'))">
+    <NativeReference Condition="$(RuntimeIdentifier.Contains('arm64'))" Include="$(NuGetPackageRoot)sqlite3mc.pclraw.lib/$(Sqlite3MCNuGetVersion)/runtimes/iossimulator-arm64/native/sqlite3mc.a">
+      <Kind>Static</Kind>
+      <ForceLoad>True</ForceLoad>
+    </NativeReference>
+    <NativeReference Condition="$(RuntimeIdentifier.Contains('x64'))" Include="$(NuGetPackageRoot)sqlite3mc.pclraw.lib/$(Sqlite3MCNuGetVersion)/runtimes/iossimulator-x64/native/sqlite3mc.a">
+      <Kind>Static</Kind>
+      <ForceLoad>True</ForceLoad>
+    </NativeReference>
+  </ItemGroup>
+  -->
 </Project>
