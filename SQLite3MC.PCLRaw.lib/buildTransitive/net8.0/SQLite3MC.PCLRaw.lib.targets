@@ -2,4 +2,37 @@
   <ItemGroup Condition="'$(RuntimeIdentifier)' == 'browser-wasm'">
     <NativeFileReference Include="$(MSBuildThisFileDirectory)..\..\runtimes\browser-wasm\nativeassets\net8.0\sqlite3mc.a" />
   </ItemGroup>
+  <!--
+    iOS / Mac Catalyst: the provider P/Invokes via DllImport("__Internal") and
+    resolves symbols at runtime with dlsym. The static library must therefore
+    be linked with ForceLoad so its sqlite3_* globals stay dlsym-visible;
+    otherwise lookups silently fall through to Apple's system libsqlite3
+    (which has no encryption support), making PRAGMA cipher/key silent no-ops.
+  -->
+  <ItemGroup Condition="'$(TargetPlatformIdentifier)' == 'ios' And !$([MSBuild]::ValueOrDefault('$(RuntimeIdentifier)','').Contains('simulator'))">
+    <NativeReference Include="$(MSBuildThisFileDirectory)..\..\runtimes\ios-arm64\native\sqlite3mc.a">
+      <Kind>Static</Kind>
+      <ForceLoad>True</ForceLoad>
+    </NativeReference>
+  </ItemGroup>
+  <ItemGroup Condition="'$(TargetPlatformIdentifier)' == 'ios' And $([MSBuild]::ValueOrDefault('$(RuntimeIdentifier)','').Contains('simulator'))">
+    <NativeReference Include="$(MSBuildThisFileDirectory)..\..\runtimes\iossimulator-arm64\native\sqlite3mc.a" Condition="$(RuntimeIdentifier.Contains('arm64'))">
+      <Kind>Static</Kind>
+      <ForceLoad>True</ForceLoad>
+    </NativeReference>
+    <NativeReference Include="$(MSBuildThisFileDirectory)..\..\runtimes\iossimulator-x64\native\sqlite3mc.a" Condition="$(RuntimeIdentifier.Contains('x64'))">
+      <Kind>Static</Kind>
+      <ForceLoad>True</ForceLoad>
+    </NativeReference>
+  </ItemGroup>
+  <ItemGroup Condition="'$(TargetPlatformIdentifier)' == 'maccatalyst'">
+    <NativeReference Include="$(MSBuildThisFileDirectory)..\..\runtimes\maccatalyst-arm64\native\sqlite3mc.a" Condition="$(RuntimeIdentifier.Contains('arm64'))">
+      <Kind>Static</Kind>
+      <ForceLoad>True</ForceLoad>
+    </NativeReference>
+    <NativeReference Include="$(MSBuildThisFileDirectory)..\..\runtimes\maccatalyst-x64\native\sqlite3mc.a" Condition="$(RuntimeIdentifier.Contains('x64'))">
+      <Kind>Static</Kind>
+      <ForceLoad>True</ForceLoad>
+    </NativeReference>
+  </ItemGroup>
 </Project>
