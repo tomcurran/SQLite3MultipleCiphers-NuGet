@@ -1,0 +1,47 @@
+# Composite action: resolve the release version context ONCE.
+#
+# Reads Sqlite3MCVersion from Versions.props (same [xml] parse as the former
+# "Extract version from Versions.props" step) and exports the values every
+# bash step used to re-derive locally:
+#
+#   VERSION      e.g. 2.3.5
+#   TAG          v$VERSION
+#   ARCHIVE      release-$TAG.tar.gz
+#   RELEASE_URL  https://github.com/utelle/SQLite3MultipleCiphers-cb/releases/download/$TAG
+#
+# Needed by two jobs since the trusted-builder split (build and publish),
+# hence a composite instead of an inline step.
+
+name: Resolve version context
+description: >-
+  Read Sqlite3MCVersion from Versions.props and export
+  VERSION/TAG/ARCHIVE/RELEASE_URL to GITHUB_ENV (plus a `version` output).
+
+outputs:
+  version:
+    description: The version read from Versions.props (e.g. 2.3.5)
+    value: ${{ steps.version.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    - name: Extract version from Versions.props
+      id: version
+      shell: pwsh
+      run: |
+        [xml]$xml = Get-Content Versions.props
+        $version = $xml.Project.PropertyGroup.Sqlite3MCVersion
+        echo "VERSION=$version" >> $env:GITHUB_ENV
+        echo "version=$version" >> $env:GITHUB_OUTPUT
+
+    # $VERSION is available here: GITHUB_ENV entries written by the previous
+    # step apply to all subsequent steps of the same job.
+    - name: Derive tag, archive name and release URL
+      shell: bash
+      run: |
+        TAG=v$VERSION
+        ARCHIVE=release-$TAG.tar.gz
+        RELEASE_URL=https://github.com/utelle/SQLite3MultipleCiphers-cb/releases/download/$TAG
+        echo "TAG=$TAG" >> "$GITHUB_ENV"
+        echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+        echo "RELEASE_URL=$RELEASE_URL" >> "$GITHUB_ENV"

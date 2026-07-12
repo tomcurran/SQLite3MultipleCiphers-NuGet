@@ -1,0 +1,282 @@
+# Reusable trusted-builder workflow: builds the NuGet packages, signs them via
+# SignPath and writes the build provenance. Called by publish.yml.
+#
+# SLSA L3 trusted-builder split: the `build` job runs the build scripts but
+# cannot write attestations; the isolated `assemble` job writes attestations
+# but runs no build scripts. The signer identity of the provenance is this
+# reusable workflow, which downstream consumers can pin via --signer-workflow.
+
+name: Build & sign NuGet packages (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: "dry-run | release"
+        required: true
+        type: string
+    secrets:
+      SIGNPATH_API_TOKEN:
+        # Deliberately not `required: true`: if the secret is missing, the
+        # SignPath submit step fails the run (fail-closed) — signing is never
+        # silently skipped in dry-run/release.
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    permissions:
+      contents: read
+      actions: read         # SignPath fetches the unsigned artifact of this workflow run
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      MODE: ${{ inputs.mode }}
+
+    steps:
+    - name: Checkout source
+      uses: actions/checkout@v7
+
+    # Resolves VERSION/TAG/ARCHIVE/RELEASE_URL once into $GITHUB_ENV (replaces
+    # the former "Extract version from Versions.props" step and the repeated
+    # VERSION/TAG/ARCHIVE derivations at the top of the bash steps below).
+    - name: Resolve version context
+      id: version
+      uses: ./.github/actions/resolve-version
+
+    - name: Download release archive
+      shell: bash
+      run: |
+        curl -fL --retry 3 --retry-delay 5 -o "$ARCHIVE" "$RELEASE_URL/$ARCHIVE"
+        curl -fL --retry 3 --retry-delay 5 -o SHA256SUMS.txt "$RELEASE_URL/SHA256SUMS.txt"
+        curl -fL --retry 3 --retry-delay 5 -o manifest.json "$RELEASE_URL/manifest.json"
+
+    - name: Verify archive exists
+      shell: bash
+      run: |
+        if [ ! -f "$ARCHIVE" ]; then
+          echo "Archive not found!"
+          exit 1
+        fi
+
+    # -------------------------------------------------
+    # VERIFY UPSTREAM PROVENANCE (closes the SLSA chain)
+    # Cryptographically verifies the -cb binary archive against its build
+    # provenance, instead of trusting only checksums shipped in the same
+    # release. Requires release.yml in -cb to attest (see that repo).
+    #
+    # --signer-workflow additionally pins the accepted signer identity to the
+    # -cb trusted-builder workflow (SLSA L3 seam): attestations written by any
+    # other workflow in that repo are rejected.
+    # MIGRATION NOTE: this only verifies once -cb has published a release
+    # built with its new build-reusable.yml layout; against older releases
+    # the flag makes this step fail. Roll out -cb first, then enable here.
+    # -------------------------------------------------
+    - name: Verify build provenance of upstream binaries
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        gh attestation verify "$ARCHIVE" \
+          --repo utelle/SQLite3MultipleCiphers-cb \
+          --signer-workflow utelle/SQLite3MultipleCiphers-cb/.github/workflows/build-reusable.yml
+
+    - name: Extract binaries
+      shell: bash
+      run: |
+        mkdir -p cb/bld/bin
+        tar -xzf "$ARCHIVE" -C cb/bld/bin
+
+        mkdir -p cb/bld/bin/sqlite3mc
+        mv manifest.json cb/bld/bin/sqlite3mc/
+        mv SHA256SUMS.txt cb/bld/bin/sqlite3mc/
+
+    # jq is preinstalled on the windows-latest runner image — no action needed.
+    #- uses: dcarbone/install-jq-action@v2
+
+    - name: Validate binary release consistency
+      shell: bash
+      run: |
+        set -e
+
+        echo "=== Load version ==="
+        echo "Expected version: $VERSION"
+
+        echo "=== Check manifest exists ==="
+        MANIFEST="cb/bld/bin/sqlite3mc/manifest.json"
+        CHECKSUMS="cb/bld/bin/sqlite3mc/SHA256SUMS.txt"
+
+        if [ ! -f "$MANIFEST" ]; then
+          echo "ERROR: Manifest not found"
+          exit 1
+        fi
+
+        if [ ! -f "$CHECKSUMS" ]; then
+          echo "ERROR: Checksums file not found"
+          exit 1
+        fi
+
+        echo "=== Validate manifest version ==="
+        MANIFEST_VERSION=$(jq -r '.version' "$MANIFEST")
+
+        if [ "$MANIFEST_VERSION" != "v$VERSION" ]; then
+          echo "ERROR: Version mismatch (manifest=$MANIFEST_VERSION, expected=v$VERSION)"
+          exit 1
+        fi
+
+        echo "=== Validate file list ==="
+        cd cb/bld/bin
+
+        # Collect all files in release (without metadata files)
+        find sqlite3mc -type f \
+          ! -name "SHA256SUMS.txt" \
+          ! -name "manifest.json" \
+          | sort > actual_files.txt
+
+        jq --version
+        jq -r '.files[]' sqlite3mc/manifest.json | sort > expected_files.txt
+
+        echo "=== DIFF OUTPUT ==="
+        diff -u actual_files.txt expected_files.txt || true
+
+        echo "=== Validate checksums ==="
+        grep -v "$ARCHIVE" sqlite3mc/SHA256SUMS.txt > SHA256SUMS.filtered.txt
+        sha256sum -c SHA256SUMS.filtered.txt
+
+        echo "=== OK: Binary release is consistent ==="
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v5
+      with:
+        dotnet-version: 9.0.x
+
+    - name: Setup .NET for Android and iOS
+      run: dotnet workload install android ios
+
+    - name: Restore dependencies
+      run: dotnet restore
+
+    - name: Build
+      run: dotnet build --no-restore --configuration Release -p:GeneratePackageOnBuild=false
+
+    - name: Show artifacts
+      shell: pwsh
+      run: Get-ChildItem -Recurse artifacts -Include *.dll | Select-Object FullName
+
+    # SignPath upload -> submit -> download now lives in the shared composite
+    # action; staging above and restore below stay here. The `path` globs are
+    # passed VERBATIM so the uploaded ZIP layout stays identical for the
+    # portal-side artifact configuration. Behavior delta: the unsigned upload
+    # now uses if-no-files-found: error inside the composite (fail-closed).
+    # Disable until SignPath review for SQLite3MultipleCiphers has been completed
+    #- name: Sign managed DLLs (SignPath)
+    #  uses: ./.github/actions/signpath-sign
+    #  with:
+    #    mode: ${{ inputs.mode }}
+    #    artifact-name: dlls-to-sign
+    #    path: |
+    #      artifacts/bin/**/SQLitePCLRaw.batteries_v2.dll
+    #      artifacts/bin/**/SQLite3MC.PCLRaw.provider.dll
+    #    artifact-configuration-slug: windows-binaries-cb
+    #    project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+    #    organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+    #    api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+    #    output-directory: signed-win
+
+    # Disable until SignPath review for SQLite3MultipleCiphers has been completed
+    #- name: Restore signed Windows binaries
+    #  shell: pwsh
+    #  run: |
+    #    # SignPath returns the same tree structure; overlay the signed PE files
+    #    # back over cb/bld/bin so "Upload artifacts" carries the signed ones.
+    #    Copy-Item signed-win/* artifacts/bin/ -Recurse -Force
+    #    Get-ChildItem -Recurse artifacts/bin -Include *.dll,*.exe | Select-Object FullName
+
+    - name: Pack
+      run: dotnet pack --no-build --configuration Release
+
+    - name: Show list of NuGet packages
+      run: Get-ChildItem -Recurse "artifacts\package\release"
+
+    # -------------------------------------------------
+    # CODE SIGNING (SignPath) — NuGet author-sign the .nupkg packages HERE,
+    # before the SLSA provenance is generated and before they are pushed, so the
+    # attested AND published package is the SIGNED one. NuGet signing mutates the
+    # package bytes; signing must therefore come first, otherwise the attestation
+    # digest would not match the published file.
+    #
+    #   dry-run -> test-signing    (self-signed TEST cert; exercises the wiring,
+    #                               NOT pushed — see push step, release-only)
+    #   release -> release-signing (production cert; pushed to nuget.org)
+    #
+    # IMPORTANT (nuget.org): it accepts ONLY packages signed with a certificate
+    # registered on the account, and self-signed TEST certificates are rejected.
+    # Once any certificate is registered, ALL pushes must be signed. Register the
+    # SignPath production certificate (DER .cer) on the nuget.org account BEFORE
+    # the first signed `release`. The test-certificate phase therefore validates
+    # signing in `dry-run` only (no push).
+    # -------------------------------------------------
+    # Disable until SignPath review for SQLite3MultipleCiphers has been completed
+    #- name: Sign NuGet packages (SignPath)
+    #  uses: ./.github/actions/signpath-sign
+    #  with:
+    #    mode: ${{ inputs.mode }}
+    #    artifact-name: unsigned-nupkg
+    #    path: artifacts/package/release/*.nupkg
+    #    artifact-configuration-slug: nuget-packages
+    #    project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+    #    organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+    #    api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+    #    output-directory: signed-nupkg
+
+    # Disable until SignPath review for SQLite3MultipleCiphers has been completed
+    #- name: Replace packages with signed versions
+    #  shell: pwsh
+    #  run: |
+    #    # Overwrite the unsigned .nupkg with the signed ones (same file names) so
+    #    # the provenance attestation and `dotnet nuget push` use the signed bytes.
+    #    Copy-Item signed-nupkg/*.nupkg artifacts/package/release/ -Force
+    #    Get-ChildItem artifacts/package/release/*.nupkg
+
+    # Hand-off artifact consumed by the assemble job below (attestation) and
+    # by the publish job in publish.yml (push + GitHub Release).
+    - name: Upload signed NuGet packages
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: signed-nupkg
+        path: artifacts/package/release/*.nupkg
+        if-no-files-found: error
+
+  # -------------------------------------------------
+  # TRUSTED BUILDER — PROVENANCE
+  # The ONLY job in this repo allowed to write attestations. It runs no build
+  # scripts: it merely downloads the signed packages produced by `build` and
+  # attests them (SLSA L3 isolation).
+  # -------------------------------------------------
+  assemble:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write       # OIDC token issuance for keyless signing (Sigstore)
+      attestations: write   # write build provenance attestation
+
+    steps:
+    - name: Download signed NuGet packages
+      uses: actions/download-artifact@v8
+      with:
+        name: signed-nupkg
+        path: nupkg
+
+    # Subject digests are unchanged relative to the previous single-job layout:
+    # the artifact hand-off transports the very same signed bytes, only the
+    # local path prefix differs.
+    - name: Generate SLSA provenance (NuGet packages)
+      if: ${{ inputs.mode == 'release' }}
+      uses: actions/attest-build-provenance@v4
+      with:
+        subject-path: |
+          nupkg/**/*.nupkg

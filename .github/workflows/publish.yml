@@ -23,13 +23,35 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build-and-publish:
+  # Trusted builder: build + SignPath signing + provenance live in the
+  # reusable workflow; only its isolated `assemble` job can attest.
+  build:
+    # Union grant: the caller must hold every permission any job of the called
+    # workflow needs; the called workflow can only downgrade, never extend.
+    # id-token/attestations:write end up ONLY in the assemble job over there —
+    # the build job itself runs with contents/actions: read.
     permissions:
-      id-token: write       # OIDC token issuance for keyless signing / NuGet trusted publishing
-      contents: write       # create GitHub Release
-      attestations: write   # write build provenance attestation
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/build-reusable.yml
+    with:
+      mode: ${{ inputs.mode }}
+    secrets:
+      SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+
+  publish:
+    # needs: build waits for the called workflow as a whole — including its
+    # assemble job, so the provenance exists before anything is published.
+    needs: build
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 30
+    permissions:
+      contents: write       # create GitHub Release
+      # id-token here is SOLELY for NuGet trusted publishing (NuGet/login),
+      # NOT for attestations — the publish job cannot write attestations.
+      id-token: write
     env:
       MODE: ${{ inputs.mode }}
 
@@ -37,232 +59,17 @@ jobs:
     - name: Checkout source
       uses: actions/checkout@v7
 
-    - name: Extract version from Versions.props
+    - name: Resolve version context
       id: version
-      run: |
-        [xml]$xml = Get-Content Versions.props
-        $version = $xml.Project.PropertyGroup.Sqlite3MCVersion
-        echo "VERSION=$version" >> $env:GITHUB_ENV
-        echo "version=$version" >> $env:GITHUB_OUTPUT
-      shell: pwsh
+      uses: ./.github/actions/resolve-version
 
-    - name: Download release archive
-      shell: bash
-      run: |
-        VERSION=${{ steps.version.outputs.version }}
-        TAG=v$VERSION
-        ARCHIVE=release-$TAG.tar.gz
-        BASE=https://github.com/utelle/SQLite3MultipleCiphers-cb/releases/download/$TAG
-        curl -fL --retry 3 --retry-delay 5 -o "$ARCHIVE" "$BASE/$ARCHIVE"
-        curl -fL --retry 3 --retry-delay 5 -o SHA256SUMS.txt "$BASE/SHA256SUMS.txt"
-        curl -fL --retry 3 --retry-delay 5 -o manifest.json "$BASE/manifest.json"
-
-    - name: Verify archive exists
-      shell: bash
-      run: |
-        VERSION=${{ steps.version.outputs.version }}
-        TAG=v$VERSION
-        ARCHIVE=release-$TAG.tar.gz
-        if [ ! -f "$ARCHIVE" ]; then
-          echo "Archive not found!"
-          exit 1
-        fi
-
-    # -------------------------------------------------
-    # VERIFY UPSTREAM PROVENANCE (closes the SLSA chain)
-    # Cryptographically verifies the -cb binary archive against its build
-    # provenance, instead of trusting only checksums shipped in the same
-    # release. Requires release.yml in -cb to attest (see that repo).
-    # -------------------------------------------------
-    - name: Verify build provenance of upstream binaries
-      shell: bash
-      env:
-        GH_TOKEN: ${{ github.token }}
-      run: |
-        VERSION=${{ steps.version.outputs.version }}
-        TAG=v$VERSION
-        ARCHIVE=release-$TAG.tar.gz
-        gh attestation verify "$ARCHIVE" \
-          --repo utelle/SQLite3MultipleCiphers-cb
-
-    - name: Extract binaries
-      shell: bash
-      run: |
-        VERSION=${{ steps.version.outputs.version }}
-        TAG=v$VERSION
-        ARCHIVE=release-$TAG.tar.gz
-        mkdir -p cb/bld/bin
-        tar -xzf release-$TAG.tar.gz -C cb/bld/bin
-
-        mkdir -p cb/bld/bin/sqlite3mc
-        mv manifest.json cb/bld/bin/sqlite3mc/
-        mv SHA256SUMS.txt cb/bld/bin/sqlite3mc/
-
-    # jq is preinstalled on the windows-latest runner image — no action needed.
-    #- uses: dcarbone/install-jq-action@v2
-
-    - name: Validate binary release consistency
-      shell: bash
-      run: |
-        set -e
-
-        echo "=== Load version ==="
-        VERSION=${{ steps.version.outputs.version }}
-        TAG=v$VERSION
-        ARCHIVE=release-$TAG.tar.gz
-        echo "Expected version: $VERSION"
-
-        echo "=== Check manifest exists ==="
-        MANIFEST="cb/bld/bin/sqlite3mc/manifest.json"
-        CHECKSUMS="cb/bld/bin/sqlite3mc/SHA256SUMS.txt"
-
-        if [ ! -f "$MANIFEST" ]; then
-          echo "ERROR: Manifest not found"
-          exit 1
-        fi
-
-        if [ ! -f "$CHECKSUMS" ]; then
-          echo "ERROR: Checksums file not found"
-          exit 1
-        fi
-
-        echo "=== Validate manifest version ==="
-        MANIFEST_VERSION=$(jq -r '.version' "$MANIFEST")
-
-        if [ "$MANIFEST_VERSION" != "v$VERSION" ]; then
-          echo "ERROR: Version mismatch (manifest=$MANIFEST_VERSION, expected=v$VERSION)"
-          exit 1
-        fi
-
-        echo "=== Validate file list ==="
-        cd cb/bld/bin
-
-        # Collect all files in release (without metadata files)
-        find sqlite3mc -type f \
-          ! -name "SHA256SUMS.txt" \
-          ! -name "manifest.json" \
-          | sort > actual_files.txt
-
-        jq --version
-        jq -r '.files[]' sqlite3mc/manifest.json | sort > expected_files.txt
-
-        echo "=== DIFF OUTPUT ==="
-        diff -u actual_files.txt expected_files.txt || true
-
-        echo "=== Validate checksums ==="
-        grep -v "$ARCHIVE" sqlite3mc/SHA256SUMS.txt > SHA256SUMS.filtered.txt
-        sha256sum -c SHA256SUMS.filtered.txt
-
-        echo "=== OK: Binary release is consistent ==="
-
-    - name: Setup .NET
-      uses: actions/setup-dotnet@v5
-      with:
-        dotnet-version: 9.0.x
-
-    - name: Setup .NET for Android and iOS
-      run: dotnet workload install android ios
-
-    - name: Restore dependencies
-      run: dotnet restore
-
-    - name: Build
-      run: dotnet build --no-restore --configuration Release -p:GeneratePackageOnBuild=false
-
-    - name: Show artifacts
-      shell: pwsh
-      run: Get-ChildItem -Recurse artifacts -Include *.dll | Select-Object FullName
-
-    - name: Upload signing artifacts
-      id: upload-unsigned-win
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-      with:
-        name: dlls-to-sign
-        path: |
-          artifacts/bin/**/SQLitePCLRaw.batteries_v2.dll
-          artifacts/bin/**/SQLite3MC.PCLRaw.provider.dll
-
-    - name: Submit signing request (SignPath)
-      uses: signpath/github-action-submit-signing-request@b9d91eadd323de506c0c81cf0c7fe7438f3360fd # v2.2
-      with:
-        api-token: '${{ secrets.SIGNPATH_API_TOKEN }}'
-        organization-id: '${{ vars.SIGNPATH_ORGANIZATION_ID }}'
-        project-slug: 'SQLite3MultipleCiphers'
-        artifact-configuration-slug: 'windows-binaries-cb'
-        signing-policy-slug: ${{ inputs.mode == 'release' && 'release-signing' || 'test-signing' }}
-        github-artifact-id: '${{ steps.upload-unsigned-win.outputs.artifact-id }}'
-        wait-for-completion: true
-        # release-signing typically requires manual approval -> wait longer
-        wait-for-completion-timeout-in-seconds: 1800
-        output-artifact-directory: 'signed-win'
-
-    - name: Restore signed Windows binaries
-      shell: pwsh
-      run: |
-        # SignPath returns the same tree structure; overlay the signed PE files
-        # back over cb/bld/bin so "Upload artifacts" carries the signed ones.
-        Copy-Item signed-win/* artifacts/bin/ -Recurse -Force
-        Get-ChildItem -Recurse artifacts/bin -Include *.dll,*.exe | Select-Object FullName
-
-    - name: Pack
-      run: dotnet pack --no-build --configuration Release
-
-    - name: Show list of NuGet packages
-      run: Get-ChildItem -Recurse "artifacts\package\release"
-
-    # -------------------------------------------------
-    # CODE SIGNING (SignPath) — NuGet author-sign the .nupkg packages HERE,
-    # before the SLSA provenance is generated and before they are pushed, so the
-    # attested AND published package is the SIGNED one. NuGet signing mutates the
-    # package bytes; signing must therefore come first, otherwise the attestation
-    # digest would not match the published file.
-    #
-    #   dry-run -> test-signing    (self-signed TEST cert; exercises the wiring,
-    #                               NOT pushed — see push step, release-only)
-    #   release -> release-signing (production cert; pushed to nuget.org)
-    #
-    # IMPORTANT (nuget.org): it accepts ONLY packages signed with a certificate
-    # registered on the account, and self-signed TEST certificates are rejected.
-    # Once any certificate is registered, ALL pushes must be signed. Register the
-    # SignPath production certificate (DER .cer) on the nuget.org account BEFORE
-    # the first signed `release`. The test-certificate phase therefore validates
-    # signing in `dry-run` only (no push).
-    # -------------------------------------------------
-    - name: Upload unsigned NuGet packages
-      id: upload-unsigned-nupkg
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-      with:
-        name: unsigned-nupkg
-        path: artifacts/package/release/*.nupkg
-        if-no-files-found: error
-
-    - name: Submit signing request (SignPath)
-      uses: signpath/github-action-submit-signing-request@b9d91eadd323de506c0c81cf0c7fe7438f3360fd # v2.2
-      with:
-        api-token: '${{ secrets.SIGNPATH_API_TOKEN }}'
-        organization-id: '${{ vars.SIGNPATH_ORGANIZATION_ID }}'
-        project-slug: 'SQLite3MultipleCiphers'
-        artifact-configuration-slug: 'nuget-packages'
-        signing-policy-slug: ${{ inputs.mode == 'release' && 'release-signing' || 'test-signing' }}
-        github-artifact-id: '${{ steps.upload-unsigned-nupkg.outputs.artifact-id }}'
-        wait-for-completion: true
-        # release-signing typically requires manual approval -> wait longer
-        wait-for-completion-timeout-in-seconds: 1800
-        output-artifact-directory: 'signed-nupkg'
-
-    - name: Replace packages with signed versions
-      shell: pwsh
-      run: |
-        # Overwrite the unsigned .nupkg with the signed ones (same file names) so
-        # the provenance attestation and `dotnet nuget push` use the signed bytes.
-        Copy-Item signed-nupkg/*.nupkg artifacts/package/release/ -Force
-        Get-ChildItem artifacts/package/release/*.nupkg
-
-    - name: Upload signed NuGet packages
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+    # The signed packages produced by the trusted builder land exactly where
+    # the push loop below expects them.
+    - name: Download signed NuGet packages
+      uses: actions/download-artifact@v8
       with:
         name: signed-nupkg
-        path: artifacts/package/release/*.nupkg
+        path: artifacts/package/release
 
     # -------------------------------------------------
     # MODE INFO
@@ -288,13 +95,6 @@ jobs:
             ;;
         esac
 
-    - name: Generate SLSA provenance (NuGet packages)
-      if: ${{ inputs.mode == 'release' }}
-      uses: actions/attest-build-provenance@v4
-      with:
-        subject-path: |
-          artifacts/package/release/**/*.nupkg
-
     # Get a short-lived NuGet API key
     - name: NuGet login (OIDC → temp API key)
       if: ${{ inputs.mode == 'release' }}
@@ -302,7 +102,7 @@ jobs:
       id: login
       with:
         user: ${{ secrets.NUGET_USER }}
-    
+
     # Push the packages
     - name: Push NuGet packages
       if: ${{ inputs.mode == 'release' }}
@@ -316,52 +116,19 @@ jobs:
       env:
         NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
 
+    # The release body lives as a template next to the workflow
+    # (.github/release-body.md.in) instead of ~45 inline YAML lines;
+    # @VERSION@ is the only substituted token. Rendered in every mode so a
+    # dry-run also smoke-tests the template.
+    - name: Render release notes
+      shell: bash
+      run: |
+        sed "s/@VERSION@/$VERSION/g" .github/release-body.md.in > release-body.md
+
     - name: Create GitHub Release
       if: ${{ inputs.mode == 'release' }}
       uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
       with:
         tag_name: v${{ steps.version.outputs.version }}
         name: SQLite3MC ${{ steps.version.outputs.version }} NuGet Packages
-        body: |
-          ## Changes
-
-          - See detailed [change log](https://github.com/utelle/SQLite3MultipleCiphers-NuGet/blob/main/CHANGELOG.md#v${{ steps.version.outputs.version }})
-          
-          ## NuGet Packages
-
-          This release is available on NuGet.org:
-
-          - https://www.nuget.org/packages?q=sqlite3mc
-
-          The project consists of the following 3 NuGet packages (downloadable from [NuGet.org](https://nuget.org)):
-
-          - [SQLite3MC.PCLRaw.bundle](https://www.nuget.org/packages/SQLite3MC.PCLRaw.bundle), depends on `provider` and `lib`
-          - [SQLite3MC.PCLRaw.provider](https://www.nuget.org/packages/SQLite3MC.PCLRaw.provider), depends on [SQLitePCLRaw.core](https://www.nuget.org/packages/SQLitePCLRaw.core/) (>= 3.0.2)
-          - [SQLite3MC.PCLRaw.lib](https://www.nuget.org/packages/SQLite3MC.PCLRaw.lib), no dependencies
-
-          ## Deprecated packages `SQLitePCLRaw.*e_sqlite3mc`
-
-          The following packages are deprecated and no longer maintained:
-
-          - [SQLitePCLRaw.bundle_e_sqlite3mc](https://www.nuget.org/packages/SQLitePCLRaw.bundle_e_sqlite3mc)
-          - [SQLitePCLRaw.provider.e_sqlite3mc](https://www.nuget.org/packages/SQLitePCLRaw.provider.e_sqlite3mc)
-          - [SQLitePCLRaw.lib.e_sqlite3mc](https://www.nuget.org/packages/SQLitePCLRaw.lib.e_sqlite3mc)
-
-          Please use the packages [SQLite3MC.PCLRaw.bundle](https://www.nuget.org/packages/SQLite3MC.PCLRaw.bundle), [SQLite3MC.PCLRaw.provider](https://www.nuget.org/packages/SQLite3MC.PCLRaw.provider), and [SQLite3MC.PCLRaw.lib](https://www.nuget.org/packages/SQLite3MC.PCLRaw.lib) instead.
-
-          ## Build & Integrity
-
-          - Native binaries are validated using SHA256 checksums
-          - NuGet packages are built and published exclusively through GitHub Actions CI
-          - Builds are executed in a controlled, ephemeral CI environment
-          - Build inputs (source revision, workflow definition, and dependencies) are recorded as part of the build process
-          - GitHub build provenance is generated and cryptographically attested (SLSA-aligned provenance)
-
-          ### Verification
-
-          Build provenance can be verified using the GitHub CLI:
-          ```
-          gh attestation verify <package.nupkg>
-          ```
-
-          Alternatively, attestations can be inspected via the corresponding GitHub Actions workflow run in the repository.
+        body_path: release-body.md

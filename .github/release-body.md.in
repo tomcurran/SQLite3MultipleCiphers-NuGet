@@ -1,0 +1,42 @@
+## Changes
+
+- See detailed [change log](https://github.com/utelle/SQLite3MultipleCiphers-NuGet/blob/main/CHANGELOG.md#v@VERSION@)
+
+## NuGet Packages
+
+This release is available on NuGet.org:
+
+- https://www.nuget.org/packages?q=sqlite3mc
+
+The project consists of the following 3 NuGet packages (downloadable from [NuGet.org](https://nuget.org)):
+
+- [SQLite3MC.PCLRaw.bundle](https://www.nuget.org/packages/SQLite3MC.PCLRaw.bundle), depends on `provider` and `lib`
+- [SQLite3MC.PCLRaw.provider](https://www.nuget.org/packages/SQLite3MC.PCLRaw.provider), depends on [SQLitePCLRaw.core](https://www.nuget.org/packages/SQLitePCLRaw.core/) (>= 3.0.2)
+- [SQLite3MC.PCLRaw.lib](https://www.nuget.org/packages/SQLite3MC.PCLRaw.lib), no dependencies
+
+## Deprecated packages `SQLitePCLRaw.*e_sqlite3mc`
+
+The following packages are deprecated and no longer maintained:
+
+- [SQLitePCLRaw.bundle_e_sqlite3mc](https://www.nuget.org/packages/SQLitePCLRaw.bundle_e_sqlite3mc)
+- [SQLitePCLRaw.provider.e_sqlite3mc](https://www.nuget.org/packages/SQLitePCLRaw.provider.e_sqlite3mc)
+- [SQLitePCLRaw.lib.e_sqlite3mc](https://www.nuget.org/packages/SQLitePCLRaw.lib.e_sqlite3mc)
+
+Please use the packages [SQLite3MC.PCLRaw.bundle](https://www.nuget.org/packages/SQLite3MC.PCLRaw.bundle), [SQLite3MC.PCLRaw.provider](https://www.nuget.org/packages/SQLite3MC.PCLRaw.provider), and [SQLite3MC.PCLRaw.lib](https://www.nuget.org/packages/SQLite3MC.PCLRaw.lib) instead.
+
+## Build & Integrity
+
+- Native binaries are validated using SHA256 checksums
+- NuGet packages are built and published exclusively through GitHub Actions CI
+- Builds are executed in a controlled, ephemeral CI environment
+- Build inputs (source revision, workflow definition, and dependencies) are recorded as part of the build process
+- GitHub build provenance is generated and cryptographically attested (SLSA-aligned provenance)
+
+### Verification
+
+Build provenance can be verified using the GitHub CLI:
+```
+gh attestation verify <package.nupkg>
+```
+
+Alternatively, attestations can be inspected via the corresponding GitHub Actions workflow run in the repository.
