@@ -56,24 +56,24 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="AdamE.Firebase.iOS.Analytics" Version="12.10.0" />
-    <PackageReference Include="AdamE.Firebase.iOS.Crashlytics" Version="12.10.0" />
+    <PackageReference Include="AdamE.Firebase.iOS.Analytics" Version="12.10.0" ExcludeAssets="build;native" />
+    <PackageReference Include="AdamE.Firebase.iOS.Crashlytics" Version="12.10.0" ExcludeAssets="build;native" />
     <PackageReference Include="Dapper" Version="2.1.66" />
     <PackageReference Include="Microsoft.Maui.Controls" Version="$(MauiVersion)" />
     <PackageReference Include="Microsoft.Maui.Controls.Compatibility" Version="$(MauiVersion)" />
     <PackageReference Include="Microsoft.Extensions.Logging.Debug" Version="8.0.1" />
-    <PackageReference Include="Plugin.Firebase.Analytics" Version="4.0.0" />
-    <PackageReference Include="Plugin.Firebase.Crashlytics" Version="4.0.0" />
+    <PackageReference Include="Plugin.Firebase.Analytics" Version="4.0.0" ExcludeAssets="build;native" />
+    <PackageReference Include="Plugin.Firebase.Crashlytics" Version="4.0.0" ExcludeAssets="build;native" />
     <PackageReference Include="sqlite-net-base" Version="1.9.172" />
     <PackageReference Include="SQLite3MC.PCLRaw.bundle" Version="$(Sqlite3MCNuGetVersion)" />
   </ItemGroup>
 
   <ItemGroup Condition="'$(TargetFramework)' == 'net9.0-android'">
-    <PackageReference Include="LocalyticsMaui" Version="1.2.0" />
+    <PackageReference Include="LocalyticsMaui" Version="1.2.0" ExcludeAssets="build;native" />
   </ItemGroup>
 
   <ItemGroup Condition="'$(TargetFramework)' == 'net9.0-ios'">
-    <PackageReference Include="LocalyticsMaui" Version="1.2.0" />
+    <PackageReference Include="LocalyticsMaui" Version="1.2.0" ExcludeAssets="build;native" />
   </ItemGroup>
 
   <!-- uncomment for the fix - force sqlite3mc to provide sqlite
